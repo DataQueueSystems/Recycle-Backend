@@ -103,6 +103,7 @@ def predict():
 
 
 
+
 # Route for user registration
 @app.route('/register', methods=['POST'])
 def register():
@@ -111,22 +112,50 @@ def register():
     email = data.get('email')
     password = data.get('password')
 
+    # Validate input
     if not all([name, email, password]):
         return jsonify({'error': 'Please fill out all fields'}), 400
 
+    # Hash the password
     hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
 
-    try:
-        conn = sqlite3.connect('users.db')
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-                       (name, email, hashed_password))
-        conn.commit()
-        conn.close()
-        return jsonify({'message': 'User registered successfully'}), 201
-    except sqlite3.IntegrityError:
-        return jsonify({'error': 'Email already exists'}), 400
+    retries = 5  # Retry limit for locked database
+    while retries > 0:
+        try:
+            # Connect to the database
+            conn = sqlite3.connect('users.db', timeout=10)  # Set a timeout to wait for locks
+            cursor = conn.cursor()
 
+            # Insert user data
+            cursor.execute("""
+                INSERT INTO users (name, email, password) 
+                VALUES (?, ?, ?)
+            """, (name, email, hashed_password))
+            conn.commit()
+
+            # Close connection
+            cursor.close()
+            conn.close()
+
+            # Success response
+            return jsonify({'message': 'User registered successfully'}), 201
+
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e):
+                retries -= 1
+                time.sleep(1)  # Wait before retrying
+            else:
+                return jsonify({'error': f'Database error: {str(e)}'}), 500
+
+        except sqlite3.IntegrityError:
+            return jsonify({'error': 'Email already exists'}), 400
+
+        finally:
+            # Ensure connection is closed
+            if 'conn' in locals() and conn:
+                conn.close()
+
+    return jsonify({'error': 'Database is currently busy. Please try again later.'}), 503
 # Route for user login
 @app.route('/login', methods=['POST'])
 def login():
